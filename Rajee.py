@@ -13,7 +13,7 @@ COMPANY_NAME = "Jolanka Group"
 COMPANY_SLOGAN = "Innovative Customs Data Solutions"
 COMPANY_LOGO_URL = "https://jolankagroup.com/wp-content/themes/jolanka/assets/images/icons/jolanka-logo-no-text.png"
 
-# --- Custom CSS for AI Robot Theme ---
+# --- Custom CSS for AI Robot Theme + Beautiful Table and Button ---
 st.markdown(f"""
     <style>
     @import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@700&family=Roboto:wght@400;700&display=swap');
@@ -82,6 +82,61 @@ st.markdown(f"""
         margin-right: 7px;
         vertical-align: middle;
     }}
+    /* Table styling below */
+    .stDataFrame, .custom-table {{
+        background: #ffffffcc;
+        border-radius: 16px;
+        box-shadow: 0 4px 28px 0 #1877c115;
+        padding: 20px 12px;
+        margin-bottom: 18px;
+        font-size: 1.07rem;
+    }}
+    .custom-table table {{
+        width: 100%;
+        border-collapse: separate;
+        border-spacing: 0;
+        overflow: hidden;
+        border-radius: 12px;
+        background: #f9fbfd;
+    }}
+    .custom-table th {{
+        background: linear-gradient(90deg,#1877c1 0%, #00d4ff 100%);
+        color: #fff;
+        font-weight: 700;
+        font-size: 1.1rem;
+        padding: 12px 14px;
+        border-bottom: 2px solid #b3daff;
+    }}
+    .custom-table td {{
+        padding: 10px 14px;
+        background: #f4fafd;
+        border-bottom: 1px solid #eaf3fc;
+    }}
+    .custom-table tr:last-child td {{
+        border-bottom: none;
+    }}
+    /* Beautiful button */
+    .stButton>button {{
+        background: linear-gradient(90deg, #22c1c3 0%, #1877c1 100%);
+        color: white;
+        border-radius: 22px;
+        border: none;
+        font-weight: 700;
+        font-size: 1.18rem;
+        padding: 13px 36px;
+        margin-top: 12px;
+        margin-bottom: 6px;
+        transition: box-shadow 0.2s, transform 0.15s;
+        box-shadow: 0 2px 14px 0 #1877c133, 0 2px 8px 0 #22c1c322;
+        outline: none;
+    }}
+    .stButton>button:hover {{
+        background: linear-gradient(90deg, #1877c1 0%, #22c1c3 100%);
+        color: #fff;
+        transform: translateY(-2px) scale(1.04);
+        box-shadow: 0 6px 20px 0 #22c1c344;
+    }}
+    
     </style>
 """, unsafe_allow_html=True)
 
@@ -555,7 +610,7 @@ def main():
                 excel_data = output.getvalue()
                 if excel_data: 
                     st.download_button(
-                        label="Export All Data to Excel (Tabular)",
+                        label="Export All Data to Excel",
                         data=excel_data,
                         file_name='all_cusdec_extracted_data_tabular.xlsx',
                         mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
