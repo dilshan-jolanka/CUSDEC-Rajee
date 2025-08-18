@@ -7,6 +7,7 @@ import os
 import re
 import pandas as pd
 import io
+import base64
 from datetime import datetime, timezone
 
 COMPANY_NAME = "Jolanka Group"
@@ -164,6 +165,7 @@ st.markdown(f'''
         <span>AI-powered extraction may make mistakes.<br><b>Always double-check extracted data.</b></span>
     </div>
 ''', unsafe_allow_html=True)
+
 # Load environment variables from .env file
 load_dotenv()
 
@@ -186,19 +188,19 @@ def generate_content(prompt):
         st.error(f"Error calling Gemini API: {e}")
         return None
 
-def extract_page_from_pdf(pdf_file_object):
+def extract_page_from_pdf(pdf_file_bytes):
+    """Extract the first page from PDF bytes"""
     try:
-        with pdfplumber.open(pdf_file_object) as pdf:
+        with pdfplumber.open(io.BytesIO(pdf_file_bytes)) as pdf:
             if len(pdf.pages) > 0:
                 return pdf.pages[0]
             else:
-                st.warning(f"PDF file {pdf_file_object.name if hasattr(pdf_file_object, 'name') else 'Unknown'} contains no pages.")
                 return None
-    except Exception as e:
-        st.error(f"Error extracting page from PDF ({pdf_file_object.name if hasattr(pdf_file_object, 'name') else 'Unknown'}): {e}")
+    except Exception:
         return None
 
 def parse_customs_reference(raw_customs_ref):
+    """Parse customs reference to extract type and numbers"""
     if not raw_customs_ref:
         return "", []
     lines = [line.strip() for line in raw_customs_ref.splitlines() if line.strip()]
@@ -218,9 +220,7 @@ def parse_customs_reference(raw_customs_ref):
     return ref_type, ref_numbers
 
 def extract_customs_reference_date(document_text, raw_customs_ref):
-    # Try to extract a date in the format DD/MM/YYYY immediately after Customs Reference Number block
-    # Use the raw_customs_ref to find its position in the document text, then scan right after it
-    # Fallback to first occurrence of DD/MM/YYYY in the document if not found nearby
+    """Extract date in DD/MM/YYYY format from document"""
     date_pattern = r"(\b\d{2}/\d{2}/\d{4}\b)"
     if raw_customs_ref:
         # Find all matches in the document, take the one nearest to customs ref block if possible
@@ -240,7 +240,7 @@ def extract_customs_reference_date(document_text, raw_customs_ref):
     return ""
 
 def extract_data_fields(file_bytes, filename):
-    # Reads from bytes, not file object!
+    """Extract data from PDF bytes with improved error handling"""
     try:
         with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
             if len(pdf.pages) > 0:
@@ -249,6 +249,7 @@ def extract_data_fields(file_bytes, filename):
                 return {"error": f"PDF file {filename} contains no pages."}
             document_text = page.extract_text()
     except Exception as e:
+        st.write(f"Debug - PDF Error: {type(e).__name__}: {str(e)}")
         return {"error": f"Error extracting page from PDF ({filename}): {e}"}
 
     if not document_text:
@@ -310,7 +311,6 @@ def extract_data_fields(file_bytes, filename):
         "Box 31": "Box 31: Description",
         "Marks & Nos of Packages": "Marks & Nos of Packages",
         "Number & Kind": "Number & Kind",
-        # "Description": "Description",
         "Box 33": "Box 33: Commodity (HS) Code",
         "Box 35": "Box 35: Gross Mass (Kg)",
         "Box 38": "Box 38: Net Mass (Kg)",
@@ -334,9 +334,23 @@ If a field is not found, indicate 'Not Found'.
 Document text:
 {document_text}"""
 
-    response = generate_content(prompt)
+    # Call Gemini API with retry mechanism
+    attempts = 0
+    max_attempts = 2
+    response = None
+    
+    while attempts < max_attempts:
+        response = generate_content(prompt)
+        if response and "candidates" in response and len(response['candidates']) > 0:
+            break
+        attempts += 1
+        # Small delay between attempts
+        import time
+        time.sleep(1)
+    
     common_data = {}
     extracted_text_response = ""
+    
     if response and "candidates" in response and len(response['candidates']) > 0:
         content_part = response['candidates'][0]['content']['parts'][0]
         if 'text' in content_part:
@@ -431,39 +445,104 @@ Document text:
 
     return common_data
 
+# Function to create a download link for Excel file that doesn't require page refresh
+def get_excel_download_link(df, filename="data.xlsx"):
+    """
+    Generates a link to download the excel file without needing page refresh
+    """
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+        df.to_excel(writer, sheet_name='All Extracted Data', index=False)
+        # Auto-adjust columns' width
+        worksheet = writer.sheets['All Extracted Data']
+        for i, col in enumerate(df.columns):
+            # Find the maximum length of the column content
+            column_len = max(df[col].astype(str).map(len).max(), len(col))
+            # Add a little extra space
+            column_len = min(column_len + 2, 50)  # Cap at 50 to prevent overly wide columns
+            worksheet.set_column(i, i, column_len)
+    
+    excel_data = output.getvalue()
+    b64 = base64.b64encode(excel_data).decode()
+    
+    download_link = f'<a href="data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64,{b64}" download="{filename}" class="download-button">Download Excel File</a>'
+    
+    return download_link
+
 def main():
-    st.markdown("""
-        <style>
-            .main-title { font-size: 40px; color: #4F8BF9; text-align: center; margin-bottom: 20px; }
-            .sub-title { font-size: 24px; color: #4F8BF9; margin-top: 20px; margin-bottom: 10px; }
-            .info-text { font-size: 14px; color: #555; margin-bottom: 5px; }
-            .text-field { border-radius: 10px; padding: 10px; background: #f4f4f9; border: 1px solid #ccc; margin-bottom: 15px; }
-            .stDataFrame { margin-bottom: 15px; }
-        </style>
-    """, unsafe_allow_html=True)
-
-    # st.markdown('<h1 class="main-title">CUSDEC II Data Extractor (Multi-PDF)</h1>', unsafe_allow_html=True)
-    # st.write("Upload one or more CUSDEC II PDFs to extract specific data fields from the first page of each.")
-    # st.warning("AI-powered extraction may make mistakes. Always double-check extracted data.")
-
     current_user_login = "dilshan-jolanka" 
 
-    # File upload and caching for stability
+    # Initialize session state for stable file handling
     if 'cached_uploaded_files' not in st.session_state:
         st.session_state['cached_uploaded_files'] = {}
+    
+    if 'all_extracted_data' not in st.session_state:
+        st.session_state.all_extracted_data = []
+        
+    if 'processing_complete' not in st.session_state:
+        st.session_state.processing_complete = False
+        
+    if 'download_link' not in st.session_state:
+        st.session_state.download_link = None
 
+    # File upload area
     uploaded_files = st.file_uploader("Upload PDFs", type=["pdf"], accept_multiple_files=True)
 
-    # Cache file bytes for stability (do not read more than once)
+    # Process the uploaded files
     if uploaded_files:
+        # Cache uploaded files in session state for stability
         for file in uploaded_files:
             if file.name not in st.session_state['cached_uploaded_files']:
-                st.session_state['cached_uploaded_files'][file.name] = file.read()
+                file_bytes = file.read()
+                # Check if this is a valid PDF by trying to open it
+                try:
+                    with pdfplumber.open(io.BytesIO(file_bytes)):
+                        st.session_state['cached_uploaded_files'][file.name] = file_bytes
+                except Exception as e:
+                    st.error(f"Error loading {file.name}: {e}")
+                    
+        # Confirm number of PDFs
+        st.write(f"{len(st.session_state['cached_uploaded_files'])} PDF(s) cached.")
+        
+        # Process button
+        if st.button("Extract Data from All Uploaded PDFs"):
+            processing_start_time_utc_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+            st.session_state.all_extracted_data = [] 
+            st.session_state.processing_complete = False
+            
+            with st.spinner("Extracting data from all PDFs..."):
+                for filename, file_bytes in st.session_state['cached_uploaded_files'].items():
+                    # Create a placeholder for each file being processed
+                    file_placeholder = st.empty()
+                    file_placeholder.write(f"Processing {filename}...")
+                    
+                    # Process the file with improved error handling
+                    try:
+                        common_data_from_extraction = extract_data_fields(file_bytes, filename)
+                        st.session_state.all_extracted_data.append({
+                            "filename": filename,
+                            "data": common_data_from_extraction,
+                            "processing_datetime_utc": processing_start_time_utc_str,
+                            "processed_by_user": current_user_login
+                        })
+                        file_placeholder.write(f"✅ Processed {filename}")
+                    except Exception as e:
+                        st.error(f"Error processing {filename}: {str(e)}")
+                        # Still add an error entry to keep track of all files
+                        st.session_state.all_extracted_data.append({
+                            "filename": filename,
+                            "data": {"error": f"Processing error: {str(e)}"},
+                            "processing_datetime_utc": processing_start_time_utc_str,
+                            "processed_by_user": current_user_login
+                        })
+                        file_placeholder.write(f"❌ Failed to process {filename}")
+                        
+            st.success("Data extraction complete for all files!")
+            st.session_state.processing_complete = True
 
+    # Display section - define column order
     excel_column_order = [
         "Source File", 
-        # "Processing DateTime (UTC)", 
-        # "Processed By User",
         "Customs Reference Code E", 
         "Customs Reference Type",
         "Customs Reference Number",
@@ -487,7 +566,6 @@ def main():
         "Box 31: Description",
         "Marks & Nos of Packages",
         "Number & Kind",
-        # "Description",
         "Box 33: Commodity (HS) Code",
         "Box 35: Gross Mass (Kg)", 
         "Box 38: Net Mass (Kg)",
@@ -495,47 +573,9 @@ def main():
         "D.Qty",
     ]
 
-    common_fields_to_display_in_ui = [
-        "Customs Reference Code E", 
-        "Customs Reference Type",
-        "Customs Reference Number",
-        "Customs Reference Date",
-        "Declarant Sequence Year",
-        "Declarant Sequence Identifier",
-        "Box 2: Exporter", "Box 8: Consignee", "Box 9: Person Responsible for Financial Settlement",
-        "Box 11: Trading", "Box 14: Declarant/Representative", "Box 15: Country of Export",
-        "Box 16: Country of origin", "Box 18: Vessel/Flight", "Box 20: Delivery Terms",
-        "Currency",
-        "Total Amount Invoiced",
-        "Box 23: Exchange Rate",
-        "Box 28: Financial and banking data", "Guarantee LKR", "Box 31: Description",
-        "Marks & Nos of Packages",
-        "Number & Kind",
-        # "Description",
-        "Box 33: Commodity (HS) Code", "Box 35: Gross Mass (Kg)", "Box 38: Net Mass (Kg)",
-        "D.Val", "D.Qty",
-    ]
+    common_fields_to_display_in_ui = [field for field in excel_column_order if field != "Source File"]
 
-    if 'all_extracted_data' not in st.session_state:
-        st.session_state.all_extracted_data = []
-
-    if st.session_state['cached_uploaded_files']:
-        st.write(f"{len(st.session_state['cached_uploaded_files'])} PDF(s) cached.")
-        if st.button("Extract Data from All Uploaded PDFs"):
-            processing_start_time_utc_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
-            st.session_state.all_extracted_data = [] 
-            with st.spinner("Extracting data from all PDFs..."):
-                for filename, file_bytes in st.session_state['cached_uploaded_files'].items():
-                    st.write(f"Processing {filename}...")
-                    common_data_from_extraction = extract_data_fields(file_bytes, filename)
-                    st.session_state.all_extracted_data.append({
-                        "filename": filename,
-                        "data": common_data_from_extraction,
-                        "processing_datetime_utc": processing_start_time_utc_str,
-                        "processed_by_user": current_user_login
-                    })
-            st.success("Data extraction complete for all files!")
-
+    # Display extracted data
     if st.session_state.all_extracted_data:
         st.markdown("---")
         for item_idx, item in enumerate(st.session_state.all_extracted_data):
@@ -551,71 +591,96 @@ def main():
                 st.error(data_for_file["error"])
                 st.markdown("---")
                 continue
+                
             if isinstance(data_for_file, dict) and data_for_file.get("error"):
                 st.error(f"Extraction error for {filename}: {data_for_file.get('error')}")
                 st.markdown("---")
                 continue
 
+            # Display data in 3 columns
             col1, col2, col3 = st.columns(3)
             for field_idx, field in enumerate(common_fields_to_display_in_ui):
                 field_value = data_for_file.get(field, "")
                 sanitized_field_name = re.sub(r'[^A-Za-z0-9_]', '', field)
                 unique_key = f"file{item_idx}_field{field_idx}_{sanitized_field_name}"
+                
                 if field_idx % 3 == 0:
                     with col1: st.text_input(field, value=field_value, key=unique_key, disabled=True)
                 elif field_idx % 3 == 1:
                     with col2: st.text_input(field, value=field_value, key=unique_key, disabled=True)
                 else:
                     with col3: st.text_input(field, value=field_value, key=unique_key, disabled=True)
+                    
             st.markdown("---")
 
-        if st.session_state.all_extracted_data:
+        # Create Excel file for download
+        if st.session_state.processing_complete:
             all_files_rows_for_excel = []
 
             for item in st.session_state.all_extracted_data:
                 filename = item["filename"]
                 data_for_file = item["data"]
-                proc_datetime = item.get("processing_datetime_utc", "N/A")
-                proc_user = item.get("processed_by_user", "N/A")
 
-                row_data = {
-                    "Source File": filename,
-                    "Processing DateTime (UTC)": proc_datetime,
-                    "Processed By User": proc_user
-                }
+                row_data = {"Source File": filename}
+                
+                # Handle error cases
                 is_error_state = isinstance(data_for_file, str) or (isinstance(data_for_file, dict) and "error" in data_for_file)
                 if is_error_state:
                     error_message = data_for_file if isinstance(data_for_file, str) else data_for_file.get("error", "Unknown extraction error")
                     row_data["Declarant Sequence Year"] = f"ERROR: {error_message}"
                     for field_name in excel_column_order:
                         if field_name not in row_data:
-                             row_data[field_name] = "N/A due to error" if field_name not in ["Source File", "Processing DateTime (UTC)", "Processed By User"] else row_data.get(field_name)
+                             row_data[field_name] = "N/A due to error" if field_name != "Source File" else row_data.get(field_name)
                 else:
+                    # Normal case - add all fields
                     for field_name in excel_column_order:
-                        if field_name not in ["Source File", "Processing DateTime (UTC)", "Processed By User"]:
+                        if field_name != "Source File":
                             row_data[field_name] = data_for_file.get(field_name, "")
+                
                 all_files_rows_for_excel.append(row_data)
             
             if all_files_rows_for_excel:
+                # Create DataFrame for Excel
                 df_export = pd.DataFrame(all_files_rows_for_excel)
-                final_columns_for_excel = []
+                
+                # Ensure all columns exist, even if empty
                 for col in excel_column_order:
-                    if col in df_export.columns:
-                        final_columns_for_excel.append(col)
-                df_export = df_export[final_columns_for_excel]
-
-                output = io.BytesIO()
-                with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-                    df_export.to_excel(writer, sheet_name='All Extracted Data', index=False)
-                excel_data = output.getvalue()
-                if excel_data: 
-                    st.download_button(
-                        label="Export All Data to Excel",
-                        data=excel_data,
-                        file_name='all_cusdec_extracted_data_tabular.xlsx',
-                        mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-                        help='Download all extracted data in a single sheet tabular format.'
-                    )
+                    if col not in df_export.columns:
+                        df_export[col] = ""
+                
+                # Order columns correctly
+                df_export = df_export[excel_column_order]
+                
+                # Create the download link that doesn't require page refresh
+                st.markdown("""
+                    <style>
+                    .download-button {
+                        display: inline-block;
+                        padding: 12px 24px;
+                        background: linear-gradient(90deg, #22c1c3 0%, #1877c1 100%);
+                        color: white !important;
+                        text-decoration: none;
+                        font-weight: bold;
+                        border-radius: 22px;
+                        margin-top: 20px;
+                        text-align: center;
+                        box-shadow: 0 2px 14px 0 #1877c133;
+                        transition: all 0.3s ease;
+                    }
+                    .download-button:hover {
+                        background: linear-gradient(90deg, #1877c1 0%, #22c1c3 100%);
+                        box-shadow: 0 4px 20px 0 #1877c155;
+                        transform: translateY(-2px);
+                    }
+                    </style>
+                """, unsafe_allow_html=True)
+                
+                # Generate the download link
+                download_link = get_excel_download_link(df_export, "all_cusdec_extracted_data.xlsx")
+                st.session_state.download_link = download_link
+                
+                # Display the download link
+                st.markdown(download_link, unsafe_allow_html=True)
 
 if __name__ == "__main__":
     main()
