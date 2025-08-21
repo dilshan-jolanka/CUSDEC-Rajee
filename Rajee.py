@@ -413,7 +413,7 @@ Document text:
             common_data[mass_key] = cleaned_val
 
     # Box 22: Currency & Total Amount Invoiced
-    box22_val = common_data.get("Box 22: Currency & Total Amount Invoiced", "")
+    box22_val = common_data.pop("Box 22: Currency & Total Amount Invoiced", "")
     currency, total_amount = "", ""
     if box22_val:
         # Remove "& Total Amount Invoiced:" prefix
@@ -442,10 +442,6 @@ def main():
         </style>
     """, unsafe_allow_html=True)
 
-    # st.markdown('<h1 class="main-title">CUSDEC II Data Extractor (Multi-PDF)</h1>', unsafe_allow_html=True)
-    # st.write("Upload one or more CUSDEC II PDFs to extract specific data fields from the first page of each.")
-    # st.warning("AI-powered extraction may make mistakes. Always double-check extracted data.")
-
     current_user_login = "dilshan-jolanka" 
 
     # File upload and caching for stability
@@ -456,14 +452,19 @@ def main():
 
     # Cache file bytes for stability (do not read more than once)
     if uploaded_files:
+        new_files_uploaded = False
         for file in uploaded_files:
             if file.name not in st.session_state['cached_uploaded_files']:
                 st.session_state['cached_uploaded_files'][file.name] = file.read()
+                new_files_uploaded = True
+        if new_files_uploaded:
+            st.session_state.all_extracted_data = []
+
 
     excel_column_order = [
         "Source File", 
-        # "Processing DateTime (UTC)", 
-        # "Processed By User",
+        "Processing DateTime (UTC)", 
+        "Processed By User",
         "Customs Reference Code E", 
         "Customs Reference Type",
         "Customs Reference Number",
@@ -487,7 +488,6 @@ def main():
         "Box 31: Description",
         "Marks & Nos of Packages",
         "Number & Kind",
-        # "Description",
         "Box 33: Commodity (HS) Code",
         "Box 35: Gross Mass (Kg)", 
         "Box 38: Net Mass (Kg)",
@@ -511,7 +511,6 @@ def main():
         "Box 28: Financial and banking data", "Guarantee LKR", "Box 31: Description",
         "Marks & Nos of Packages",
         "Number & Kind",
-        # "Description",
         "Box 33: Commodity (HS) Code", "Box 35: Gross Mass (Kg)", "Box 38: Net Mass (Kg)",
         "D.Val", "D.Qty",
     ]
@@ -535,6 +534,7 @@ def main():
                         "processed_by_user": current_user_login
                     })
             st.success("Data extraction complete for all files!")
+            st.rerun()
 
     if st.session_state.all_extracted_data:
         st.markdown("---")
@@ -544,8 +544,26 @@ def main():
             proc_datetime = item.get("processing_datetime_utc", "N/A")
             proc_user = item.get("processed_by_user", "N/A")
 
-            st.markdown(f'<h2 class="sub-title">Extracted Data for: {filename}</h2>', unsafe_allow_html=True)
-            st.markdown(f'<p class="info-text">Processed on: {proc_datetime} (UTC) by {proc_user}</p>', unsafe_allow_html=True)
+            # --- SOLUTION: Use columns to place title and button side-by-side ---
+            col_title, col_button = st.columns([2, 1])
+            with col_title:
+                st.markdown(f'<h2 class="sub-title">Extracted Data for: {filename}</h2>', unsafe_allow_html=True)
+                st.markdown(f'<p class="info-text">Processed on: {proc_datetime} (UTC) by {proc_user}</p>', unsafe_allow_html=True)
+            with col_button:
+                if st.button(f"🔄 Recapture Data", key=f"recapture_{item_idx}_{filename}"):
+                    with st.spinner(f"Recapturing data for {filename}..."):
+                        file_bytes = st.session_state['cached_uploaded_files'][filename]
+                        recaptured_data = extract_data_fields(file_bytes, filename)
+                        
+                        # Update the specific item in the session state list
+                        st.session_state.all_extracted_data[item_idx] = {
+                            "filename": filename,
+                            "data": recaptured_data,
+                            "processing_datetime_utc": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
+                            "processed_by_user": current_user_login
+                        }
+                    st.success(f"Recapture complete for {filename}!")
+                    st.rerun() # Refresh the page to show the updated data
             
             if "error" in data_for_file:
                 st.error(data_for_file["error"])
