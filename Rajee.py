@@ -8,6 +8,42 @@ import re
 import pandas as pd
 import io
 from datetime import datetime, timezone
+import streamlit.components.v1 as components
+import logging
+import traceback
+import json as _json
+
+# --- Setup logging to terminal and browser console ---
+logger = logging.getLogger("cusdec_app")
+if not logger.handlers:
+    handler = logging.StreamHandler()
+    formatter = logging.Formatter('%(asctime)s %(levelname)s %(name)s: %(message)s')
+    handler.setFormatter(formatter)
+    logger.addHandler(handler)
+logger.setLevel(logging.DEBUG)
+
+def _mirror_to_browser_console(level: str, message: str):
+    """Send a console.<level> message to the browser via injected script."""
+    try:
+        js_msg = _json.dumps(message)
+        components.html(f"<script>console.{level}({js_msg});</script>", height=0)
+    except Exception:
+        logger.debug("Failed to mirror message to browser console")
+
+def log_error(message: str):
+    """Log error to terminal and browser console."""
+    logger.error(message)
+    _mirror_to_browser_console('error', message)
+
+def log_info(message: str):
+    """Log info to terminal and browser console."""
+    logger.info(message)
+    _mirror_to_browser_console('info', message)
+
+def log_warning(message: str):
+    """Log warning to terminal and browser console."""
+    logger.warning(message)
+    _mirror_to_browser_console('warn', message)
 
 COMPANY_NAME = "Jolanka Group"
 COMPANY_SLOGAN = "Innovative Customs Data Solutions"
@@ -164,26 +200,81 @@ st.markdown(f'''
         <span>AI-powered extraction may make mistakes.<br><b>Always double-check extracted data.</b></span>
     </div>
 ''', unsafe_allow_html=True)
+
+# --- Sanitize localStorage to prevent JSON parse errors ---
+components.html("""
+<script>
+(function(){
+  try{
+    const keys = [];
+    for (let i = 0; i < localStorage.length; i++) keys.push(localStorage.key(i));
+    keys.forEach(k => {
+      if(!k) return;
+      if(!/(streamlit|metrics|anonymous|analytics|telemetry)/i.test(k)) return;
+      const v = localStorage.getItem(k);
+      if (v === null) return;
+      try{ JSON.parse(v); }
+      catch(e){
+        console.warn('[CUSDEC Sanitizer] Removed invalid JSON from localStorage key:', k, v && v.slice ? v.slice(0,200) : v);
+        localStorage.removeItem(k);
+      }
+    });
+  }catch(err){
+    console.warn('[CUSDEC Sanitizer] Error:', err);
+  }
+})();
+</script>
+""", height=0)
+
 # Load environment variables from .env file
 load_dotenv()
 
 # Gemini API Configuration
 gemini_api_key = os.getenv("GOOGLE_API_KEY")
 if not gemini_api_key:
-    st.error("Gemini API key not found. Please set GOOGLE_API_KEY in your .env file.")
+    err_msg = "Gemini API key not found. Please set GOOGLE_API_KEY in your .env file."
+    st.error(err_msg)
+    log_error(err_msg)
     st.stop()
+else:
+    # Log masked confirmation
+    try:
+        masked = f"{gemini_api_key[:4]}...{gemini_api_key[-4:]}" if len(gemini_api_key) > 8 else "(loaded)"
+        log_info(f"GOOGLE_API_KEY loaded: {masked}")
+    except Exception:
+        pass
 
-gemini_endpoint = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent"
+gemini_endpoint = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent"
 
 def generate_content(prompt):
-    headers = {"Content-Type": "application/json"}
+    headers = {
+        "Content-Type": "application/json",
+        "X-goog-api-key": gemini_api_key
+    }
     data = {"contents": [{"parts": [{"text": prompt}]}]}
     try:
-        response = requests.post(f"{gemini_endpoint}?key={gemini_api_key}", headers=headers, json=data)
+        logger.debug("Calling Gemini API: %s", gemini_endpoint)
+        log_info("Calling Gemini API...")
+        
+        response = requests.post(gemini_endpoint, headers=headers, json=data, timeout=30)
+        
+        logger.debug("Gemini response status: %s", response.status_code)
+        
+        if response.status_code != 200:
+            body_preview = response.text[:2000]
+            err_msg = f"Gemini API returned {response.status_code}: {body_preview}"
+            st.error(err_msg)
+            log_error(err_msg)
+            return None
+            
         response.raise_for_status()
+        log_info("Gemini API call successful")
         return response.json()
     except requests.exceptions.RequestException as e:
-        st.error(f"Error calling Gemini API: {e}")
+        tb = traceback.format_exc()
+        err_msg = f"Error calling Gemini API: {e}\n{tb}"
+        st.error(err_msg)
+        log_error(err_msg)
         return None
 
 def extract_page_from_pdf(pdf_file_object):
@@ -192,10 +283,15 @@ def extract_page_from_pdf(pdf_file_object):
             if len(pdf.pages) > 0:
                 return pdf.pages[0]
             else:
-                st.warning(f"PDF file {pdf_file_object.name if hasattr(pdf_file_object, 'name') else 'Unknown'} contains no pages.")
+                warn_msg = f"PDF file {pdf_file_object.name if hasattr(pdf_file_object, 'name') else 'Unknown'} contains no pages."
+                st.warning(warn_msg)
+                log_warning(warn_msg)
                 return None
     except Exception as e:
-        st.error(f"Error extracting page from PDF ({pdf_file_object.name if hasattr(pdf_file_object, 'name') else 'Unknown'}): {e}")
+        tb = traceback.format_exc()
+        err_msg = f"Error extracting page from PDF ({pdf_file_object.name if hasattr(pdf_file_object, 'name') else 'Unknown'}): {e}\n{tb}"
+        st.error(err_msg)
+        log_error(err_msg)
         return None
 
 def parse_customs_reference(raw_customs_ref):
@@ -246,13 +342,20 @@ def extract_data_fields(file_bytes, filename):
             if len(pdf.pages) > 0:
                 page = pdf.pages[0]
             else:
-                return {"error": f"PDF file {filename} contains no pages."}
+                err = f"PDF file {filename} contains no pages."
+                log_error(err)
+                return {"error": err}
             document_text = page.extract_text()
     except Exception as e:
-        return {"error": f"Error extracting page from PDF ({filename}): {e}"}
+        tb = traceback.format_exc()
+        err = f"Error extracting page from PDF ({filename}): {e}\n{tb}"
+        log_error(err)
+        return {"error": err}
 
     if not document_text:
-        return {"error": f"No text could be extracted from the first page of {filename}."}
+        err = f"No text could be extracted from the first page of {filename}."
+        log_error(err)
+        return {"error": err}
 
     # Custom bbox for additional fields (can be adjusted as needed)
     specific_box_coords = {
@@ -636,4 +739,14 @@ def main():
                     )
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as e:
+        tb = traceback.format_exc()
+        err_msg = f"Uncaught exception in main: {e}\n{tb}"
+        logger.exception("Uncaught exception in main")
+        try:
+            st.error(err_msg)
+        except Exception:
+            pass
+        log_error(err_msg)
