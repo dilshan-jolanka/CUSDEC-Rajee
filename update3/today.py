@@ -440,12 +440,23 @@ Document text:
     response = generate_content(prompt)
     common_data = {}
     extracted_text_response = ""
+    
+    # Log the raw Gemini response for debugging
+    if response:
+        logger.debug(f"Gemini response for {filename}: {str(response)[:500]}")
+    
     if response and "candidates" in response and len(response['candidates']) > 0:
         content_part = response['candidates'][0]['content']['parts'][0]
         if 'text' in content_part:
             extracted_text_response = content_part['text']
+            # Log what Gemini returned
+            log_info(f"Gemini extracted text preview (first 500 chars): {extracted_text_response[:500]}")
+            logger.debug(f"Full Gemini response text for {filename}:\n{extracted_text_response}")
+            
             for line in extracted_text_response.strip().split('\n'):
                 line = line.strip()
+                # Remove leading bullet points or list markers (-, *, •, etc.)
+                line = re.sub(r'^[-*•]\s*', '', line)
                 if ": " in line:
                     parts = line.split(": ", 1)
                     if len(parts) == 2:
@@ -473,6 +484,11 @@ Document text:
                                 if re.match(re.escape(prefix), cleaned_value, re.IGNORECASE):
                                     cleaned_value = cleaned_value[len(prefix):].strip(); break
                             common_data[display_key] = cleaned_value
+                            logger.debug(f"Parsed field: {display_key} = {cleaned_value[:100]}")
+
+    # Log how many fields were extracted
+    log_info(f"Extracted {len(common_data)} fields from {filename}")
+    logger.debug(f"Extracted fields for {filename}: {list(common_data.keys())}")
 
     # Declarant's Sequence Number split
     full_dsn = common_data.pop("Declarant's Sequence Number", "")
