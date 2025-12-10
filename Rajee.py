@@ -244,7 +244,7 @@ else:
     except Exception:
         pass
 
-gemini_endpoint = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent"
+gemini_endpoint = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-8b:generateContent"
 
 def generate_content(prompt):
     headers = {
